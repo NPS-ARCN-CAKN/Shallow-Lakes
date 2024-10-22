@@ -24,7 +24,7 @@ library(psych)
 
 ```
 
-# DOC vs TN Analysis For Amy
+# DOC vs TN Analysis
 
 Determine if there is a predictable relationship between DOC and DON that can be used to back-generate DON for lakes where it was omitted during data collection
 
