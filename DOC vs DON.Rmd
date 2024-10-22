@@ -1,0 +1,340 @@
+---
+title: ""
+author: ""
+date: ""
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+
+# Global NA to blank
+options(knitr.kable.NA = '')
+knitr::opts_chunk$set(echo = FALSE)
+
+# Libraries
+library(sqldf)
+library(tidyverse)
+library(odbc)
+library(leaflet)
+library(psych)
+
+```
+
+# DOC vs TN Analysis For Amy
+
+Determine if there is a predictable relationship between DOC and DON that can be used to back-generate DON for lakes where it was omitted during data collection
+
+```{r, echo=FALSE}
+# Get the data
+# The database has a query called Dataset_DOC_DON which calculates a mean for DOC/DON by lake and sample date. Use these data for the analysis
+
+# Database connection 
+connection = dbConnect(odbc(),Driver = "Sql Server",Server = "inpyugamsvm01\\nuna", Database = "AK_ShallowLakes")
+
+# Query the Dataset_DOC_DON database view
+Sql = "SELECT        d.PONDNAME, d.PARK, CONVERT(Date, d.SAMPLEDATE) AS SAMPLEDATE, d.DOC_Mean, d.DOC_Min, d.DOC_Max, d.DOC_SD, d.DOC_NumberOfNonNullSamples, d.[DOC_SampleReplicates (A/B/C)], d.TDN_Mean, d.TDN_Min, 
+                         d.TDN_Max, d.TDN_SD, d.TDN_n, d.TDN_NumberOfNonNullSamples, d.[TDN_SampleReplicates (A/B/C)], d.TN_Mean, d.TN_Min, d.TN_Max, d.TN_SD, d.TN_n, d.TN_NumberOfNonNullSamples, d.[TN_SampleReplicates (A/B/C)]
+, case when p.LATITUDE_WGS84 is NULL then p.LATITUDE_NAD83 end AS Lat
+, case when p.LONGITUDE_WGS84 is NULL then p.LONGITUDE_NAD83 end AS Lon
+--, p.LONGITUDE_WGS84 AS Lon, p.LATITUDE_NAD83, p.LONGITUDE_NAD83
+FROM            Dataset_DOC_DON AS d INNER JOIN
+                         tblPonds AS p ON d.PONDNAME = p.PONDNAME
+ORDER BY d.PONDNAME, SAMPLEDATE"
+
+# Make a data frame
+Data = dbGetQuery(connection,Sql)
+
+# Make sampling dates real dates instead of strings
+Data$SAMPLEDATE = as.Date(Data$SAMPLEDATE)
+# view(Data)
+
+# Get the number of records missing DON
+NumberOfRecordsWithDOCButNoDON = sqldf("SELECT Count(*) FROM Data WHERE DOC_Mean IS NOT NULL And (TDN_Mean IS NULL Or TDN_Mean = '')")
+
+```
+
+There are `r NumberOfRecordsWithDOCButNoDON` records with a recorded DON but no TDN value.
+
+
+# Step 1: QC the chemistry data
+
+## QC the parameters
+
+```{r,echo=FALSE,results='asis'}
+# Functions
+
+# Get a report section for a chemistry component name - use only the component name, not trailing stuff like '_MG_L', etc
+# Example: GetChemistryComponentQCReportSection('DOC')
+GetChemistryComponentQCReportSection = function(ChemistryComponentName){
+  
+  #ChemistryComponentName='TDN'
+  
+  # Output a section header
+  cat("### ",ChemistryComponentName,"  \n\n")
+  
+  # Build a column name for the parameter. Example: DOC_Mean
+  Parameter = paste(ChemistryComponentName,"_Mean",sep="")
+
+  # Boxplot of the parameter
+  cat("**Box Plot**  \n\n")
+  Sql = paste("SELECT PARK,",Parameter," FROM Data WHERE ",Parameter," IS NOT NULL",sep="")
+  ChemData = sqldf(Sql)
+  cat(nrow(ChemData)," non-null rows.  \n\n")
+  
+  # Box plot of the mean chemical parameter
+  print(ggplot(ChemData) + 
+          geom_boxplot(aes_string(y=Parameter),na.rm=TRUE) + 
+          theme_minimal())
+  cat("  \n\n")
+  cat(paste("\n\nFigure X. Box plot of ",Parameter,".  \n\n",sep=""))
+  
+  # Box plot of the parameter faceted by Park
+  print(ggplot(ChemData) + 
+          geom_boxplot(aes_string(y=Parameter),na.rm=TRUE) + 
+          facet_wrap(vars(PARK)) + 
+          theme_minimal())
+  cat("  \n\n")
+  cat(paste("\n\nFigure X. Box plot of ",Parameter," by park.  \n\n",sep=""))
+  cat("  \n\n")
+  
+  
+  
+  # Plot a curve of the parameter to show normality
+  cat("**Histogram of values**  \n\n")
+  cat(nrow(ChemData)," non-null rows.  \n\n")
+  # Calculate a reasonable bin width for the histogram below
+  Binwidth <- (max(ChemData[Parameter]) - min(ChemData[Parameter])) / ceiling(log2(nrow(ChemData)) + 1)
+  # Plot a histogram showing the distribution of the binned chemical data
+  print(ggplot(ChemData) + 
+          geom_histogram(aes_string(x=Parameter),binwidth=Binwidth,na.rm=TRUE) + 
+          ylab(paste("Count (",nrow(ChemData)," non-null rows)",sep="")) + 
+          theme_minimal())
+  cat(paste("\n\nFigure X. Histogram of ",Parameter,". Bin width = ",Binwidth,".  \n\n",sep=""))
+  cat("  \n\n")
+  # Same histogram as above but faceted by park
+  print(ggplot(ChemData) + 
+          geom_histogram(aes_string(x=Parameter),binwidth=Binwidth,na.rm=TRUE) + 
+          ylab(paste("Count (",nrow(ChemData)," non-null rows)",sep="")) + 
+          facet_wrap(vars(PARK)) +
+          theme_minimal())
+  cat(paste("\n\nFigure X. Histogram of ",Parameter," by Park. Bin width = ",Binwidth,".  \n\n",sep=""))
+  cat("  \n\n")
+  
+  # Calculate and summarize in a table basic statistics about the chemical component
+  cat("**Basic statistics: ",ChemistryComponentName,"**  \n\n")
+  stats = sqldf(paste("SELECT ",Parameter," FROM Data WHERE ",Parameter," IS NOT NULL ORDER BY ",Parameter," DESC",sep=""))
+  cat("  \n\n")
+  print(knitr::kable(t(describe(stats))))
+  cat("  \n\n")
+  
+  
+  # Determine what minimum detection levels exist for the parameter
+  # Append '_MDL_LEVEL' to the component name: Example DOC_MDL_LEVEL
+  MDLColumnName = paste(ChemistryComponentName,"_MDL_LEVEL",sep="")
+  cat("**Minimum detection level(s): ",MDLColumnName,"**  \n\n")
+  # Get the distinct MDL for the chemical component. These are usually consistent by lab, so lab changes are where these MDLs are likely to change
+  Sql = paste("SELECT DISTINCT ",MDLColumnName," As MDL,CHEM_LAB FROM tblWaterChemistry WHERE ",MDLColumnName," IS NOT NULL ORDER BY ",MDLColumnName,sep="")
+  # Dump out  table of Lab/MDLs for the chemical component
+  MDLs = dbGetQuery(connection,Sql)
+  print(knitr::kable(MDLs))
+  cat("\n\n")
+  #cat(Sql,"  \n\n")
+
+  # Show the number of records, if any, that are below MDL
+  cat("**Number of records below minimum detection level**  \n\n")
+  Sql = paste("SELECT COUNT(*) AS [n] FROM tblWaterChemistry WHERE (",ChemistryComponentName,"_MG_L < ",ChemistryComponentName,"_MDL_LEVEL)",sep="")
+  print(knitr::kable(dbGetQuery(connection,Sql)))
+  cat("\n\n")
+  #cat(Sql,"  \n\n")
+  
+  # for(i in 1:nrow(MDLs)) {       # for-loop over the MDLs
+  #   MDL = MDLs$MDL[i]
+  #   CHEM_LAB = MDLs$CHEM_LAB
+  #   cat("Count of ",ChemistryComponentName," records below MDL of ",MDL,"  \n\n")
+  #   Sql = paste("SELECT Count(*) as n  FROM tblWaterChemistry WHERE CHEM_LAB = '",CHEM_LAB,"' And ",ChemistryComponentName,"_MG_L < ",MDL,sep="")
+  #   cat("**Records below MDL: ",ChemistryComponentName,"**  \n\n")
+  #   cat(Sql,"  \n\n")
+  #   Result = dbGetQuery(connection,Sql)
+  #   print(knitr::kable(Result))
+  #   
+  #   # If MDLs are detected then give an idea of how many records
+  #   if(Result$n > 0){
+  #     cat("Summary of ",ChemistryComponentName,"_MG_L > records below MDL by laboratory and year:  \n\n")
+  #     Sql = paste("SELECT CHEM_LAB, COUNT(*) AS n FROM tblWaterChemistry WHERE (CHEM_LAB = 'CCAL') AND (",ChemistryComponentName,"_MG_L < 0.01) GROUP BY CHEM_LAB",sep="")
+  # cat(Sql,"  \n\n")
+  #     print(knitr::kable(dbGetQuery(connection,Sql)))
+  #     cat("  \n\n")
+  #   }
+  # }  
+  
+  
+  # Comments that might be important to know
+  cat("**Comments from the database for: ",ChemistryComponentName,"**  \n\n")
+  cat("The comments below may be useful in determining any records to exclude or modify. These comments may provide insight about any outliers or data anomalies.  \n\n")
+  Sql = paste("SELECT DISTINCT ",ChemistryComponentName,"_Notes FROM tblWaterChemistry WHERE (",ChemistryComponentName,"_Notes IS NOT NULL) and LTRIM(RTRIM(",ChemistryComponentName,"_Notes)) <> '' And ISNUMERIC(",ChemistryComponentName,"_Notes) = 0 ORDER BY ",ChemistryComponentName,"_Notes",sep="")
+  print(knitr::kable(dbGetQuery(connection,Sql)))
+  cat("  \n\n")
+  
+  
+}
+
+
+
+```
+
+```{r,results='asis'}
+GetChemistryComponentQCReportSection('DOC')
+GetChemistryComponentQCReportSection('TDN')
+GetChemistryComponentQCReportSection('TN')
+```
+
+## QC: Dissolved Nitrogen Greater Than Total Nitrogen
+
+```{r, echo=FALSE}
+# Get a dataset of records having total dissolved nitrogen > total nitrogen
+TDNGTTN = dbGetQuery(connection,"SELECT Park,  [PONDNAME]
+      ,[SAMPLEDATE]
+      ,[SAMPLENUMBER]
+      ,[CHEM_LAB]
+      ,[CHEM_METHOD]
+      ,[TDN_MG_L]
+      ,[TN_MG_L]
+      ,[TDN_Notes]
+      ,[TN_Notes]
+      ,[NOTES]
+      ,[COMMENTS]
+      ,[DOC_LABDATE]
+      ,[LAB_SAMPLE_NUMBER]
+      ,[LAB_DATE]
+      ,[DELIVERY_DATE]
+      ,[THAW_DATE]
+      ,[DUPLICATED_CHEM_ANALYSIS]
+  FROM [AK_ShallowLakes].[dbo].[QC_tblWaterChemistry_TDN_GreaterThan_TN]")
+
+
+```
+
+`r nrow(TDNGTTN)` records have total dissolved nitrogen greater than total nitrogen.
+
+Table X .Summary of offending records.
+
+```{r}
+Sql = "SELECT        PARK, COUNT(*) AS n
+FROM            QC_tblWaterChemistry_TDN_GreaterThan_TN
+GROUP BY PARK
+ORDER BY n desc"
+knitr::kable(dbGetQuery(connection,Sql))
+
+```
+
+
+```{r, echo=FALSE}
+# I wanted to look at the data too see if there were any spatial explanations for the outliers but it didn't work well
+# and many plots were lacking coordinates.
+# library(ggspatial)
+# ggplot(Data %>% filter(PARK == 'YUCH')) +
+#   geom_point(aes(x=Lat,y=Lon,size=DOC_Mean,color=TDN_Mean),na.rm=TRUE) +
+#   scale_size_continuous(range = c(0,3)) +
+#   geom_spatial_wms('https://basemap.nationalmap.gov:443/arcgis/services/USGSTopo/MapServer/WmsServer', layers = "0") +
+#   theme_minimal()
+  #facet_wrap(vars(PARK),ncol=1) 
+  # +
+  # theme(#panel.spacing = unit(4, "cm"),  # Adjust space between plots
+  #   #plot.margin = unit(c(1, 1, 1, 1), "cm"),  # Adjust plot margins
+  #   aspect.ratio = 1 # Set the aspect ratio ) 
+
+```
+
+
+## QC Summary
+
+- Neither DOC nor TDN contain records with values below laboratory mean detection levels. TN does contain records below MDL, but it looks like Heidi set some of these values at just below threshold (0.99 where MDL is 1, for example). I think these records can safely be included.
+
+- DOC, TDN and TN have positive skewness (skewing toward larger values) and TDN and TN have high kurtosis (tall skinny distribution) as well. Boxplots show a lot of outliers.
+ 
+- YUCH seems to have more elevated DOC than other parks, and many more outliers.
+
+- NOAT is the only park with low value outliers for DOC.
+
+- Some records had a note: "Carbon Analysis run outside of hold time due to instrumentation problems".
+
+-   Many records exist with TDN \> TN and should be investigated
+
+# Step 2: Scatter Plots and Regressions
+
+## Linear Model
+
+### DOC Vs TDN
+
+```{r, echo=FALSE}
+# Plot mean DOC per site and sampling date against mean TDN per site and sampling date
+ggplot(Data) +
+  geom_point(aes(x=DOC_Mean,y=TDN_Mean,color=PARK),na.rm=TRUE) +
+  geom_smooth(aes(x=DOC_Mean,y=TDN_Mean),na.rm=TRUE,se =TRUE, method='lm') +
+  theme_minimal()
+
+# Fit a linear regression model
+model <- lm(Data$DOC_Mean ~ Data$TDN_Mean, data = Data)
+
+# Display the model summary
+summary(model)
+
+
+```
+
+Linear models by Park
+
+```{r}
+# Plot mean DOC per site and sampling date against mean TDN per site and sampling date
+ggplot(Data) +
+  geom_point(aes(x=DOC_Mean,y=TDN_Mean),na.rm=TRUE) +
+  geom_smooth(aes(x=DOC_Mean,y=TDN_Mean),na.rm=TRUE,se =TRUE, method='lm') +
+  facet_wrap(vars(PARK)) +
+  theme_minimal()
+
+
+```
+
+### DOC Vs TN
+
+```{r, echo=FALSE}
+# Plot mean DOC per site and sampling date against mean TN per site and sampling date
+ggplot(Data) +
+  geom_point(aes(x=DOC_Mean,y=TN_Mean,color=PARK),na.rm=TRUE) +
+  geom_smooth(aes(x=DOC_Mean,y=TN_Mean),na.rm=TRUE,se =TRUE, method='lm') +
+  theme_minimal()
+
+# Fit a linear regression model
+model <- lm(Data$DOC_Mean ~ Data$TN_Mean, data = Data)
+
+# Display the model summary
+summary(model)
+
+
+```
+
+Linear models by Park
+
+```{r}
+# Plot mean DOC per site and sampling date against mean TN per site and sampling date
+ggplot(Data) +
+  geom_point(aes(x=DOC_Mean,y=TN_Mean),na.rm=TRUE) +
+  geom_smooth(aes(x=DOC_Mean,y=TN_Mean),na.rm=TRUE,se =TRUE, method='lm') +
+  facet_wrap(vars(PARK)) +
+  theme_minimal()
+
+
+```
+
+
+## Initial Conclusions
+
+-   Given the dataset's potential problems, the R\^2 and P values indicate a significant linear relationship of moderate explanatory power. Dealing with the records having TDN > TN and outlier removal may improve R^2 fit.
+
+-   It looks like YUCH has, if not outliers, more extreme values. Need to investigate.
+
+
