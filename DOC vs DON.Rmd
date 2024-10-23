@@ -9,7 +9,7 @@ output:
     toc_float: true
 ---
 
-```{r setup, include=FALSE, echo=FALSE}
+```{r setup, include=FALSE, echo=TRUE}
 
 # Global NA to blank
 options(knitr.kable.NA = '')
@@ -28,21 +28,60 @@ library(psych)
 
 Determine if there is a predictable relationship between DOC and DON that can be used to back-generate DON for lakes where it was omitted during data collection
 
-```{r, echo=FALSE}
+Total Nitrogen (TN): This is the sum of all forms of nitrogen in the water, including organic nitrogen (like proteins and amino acids), inorganic nitrogen (like ammonia, nitrite, and nitrate), and dissolved organic nitrogen (DON).
+
+Total Dissolved Nitrogen (TDN): This includes all forms of nitrogen that are dissolved in the water, excluding particulate nitrogen. It encompasses inorganic nitrogen (ammonia, nitrite, nitrate) and dissolved organic nitrogen (DON).
+
+Inorganic Nitrogen: This refers to nitrogen in its inorganic forms, such as ammonia (NH₃), nitrite (NO₂⁻), and nitrate (NO₃⁻). These forms are typically more bioavailable and can be readily used by aquatic organisms.
+
+# Methods
+
+The water chemistry data are contained in the tblWaterChemistry database table. Water chemistry parameters generally are collected as replicates (A/B/C, etc.) that must be averaged together by lake and sampling date. These calculations are done by the database through a query called Dataset_DOC_DON. The summaries and analyses presented in this report are based on the results of the Dataset_DOC_DON query. 
+
+```{r, echo=TRUE}
 # Get the data
-# The database has a query called Dataset_DOC_DON which calculates a mean for DOC/DON by lake and sample date. Use these data for the analysis
+# The database has a query called Dataset_DOC_DON which calculates a statistics over water sample replicates for DOC/DON by lake and sample date. 
 
 # Database connection 
 connection = dbConnect(odbc(),Driver = "Sql Server",Server = "inpyugamsvm01\\nuna", Database = "AK_ShallowLakes")
 
 # Query the Dataset_DOC_DON database view
-Sql = "SELECT        d.PONDNAME, d.PARK, CONVERT(Date, d.SAMPLEDATE) AS SAMPLEDATE, d.DOC_Mean, d.DOC_Min, d.DOC_Max, d.DOC_SD, d.DOC_NumberOfNonNullSamples, d.[DOC_SampleReplicates (A/B/C)], d.TDN_Mean, d.TDN_Min, 
-                         d.TDN_Max, d.TDN_SD, d.TDN_n, d.TDN_NumberOfNonNullSamples, d.[TDN_SampleReplicates (A/B/C)], d.TN_Mean, d.TN_Min, d.TN_Max, d.TN_SD, d.TN_n, d.TN_NumberOfNonNullSamples, d.[TN_SampleReplicates (A/B/C)]
+Sql = "SELECT d.PONDNAME
+, d.PARK
+, CONVERT(Date, d.SAMPLEDATE) AS SAMPLEDATE
+
+, d.DOC_Mean
+, d.DOC_Min
+, d.DOC_Max
+, d.DOC_SD
+, d.DOC_NumberOfNonNullSamples
+, d.[DOC_SampleReplicates (A/B/C)]
+
+, d.TDN_Mean, d.TDN_Min
+, d.TDN_Max, d.TDN_SD
+, d.TDN_n
+, d.TDN_NumberOfNonNullSamples
+, d.[TDN_SampleReplicates (A/B/C)]
+
+, d.TN_Mean
+, d.TN_Min
+, d.TN_Max
+, d.TN_SD
+, d.TN_n
+, d.TN_NumberOfNonNullSamples
+, d.[TN_SampleReplicates (A/B/C)]
+
+, d.DON_Mean
+, d.DON_Min
+, d.DON_Max
+, d.DON_SD
+, d.DON_n
+
 , case when p.LATITUDE_WGS84 is NULL then p.LATITUDE_NAD83 end AS Lat
 , case when p.LONGITUDE_WGS84 is NULL then p.LONGITUDE_NAD83 end AS Lon
---, p.LONGITUDE_WGS84 AS Lon, p.LATITUDE_NAD83, p.LONGITUDE_NAD83
-FROM            Dataset_DOC_DON AS d INNER JOIN
-                         tblPonds AS p ON d.PONDNAME = p.PONDNAME
+
+FROM Dataset_DOC_DON AS d 
+INNER JOIN tblPonds AS p ON d.PONDNAME = p.PONDNAME
 ORDER BY d.PONDNAME, SAMPLEDATE"
 
 # Make a data frame
@@ -56,6 +95,8 @@ Data$SAMPLEDATE = as.Date(Data$SAMPLEDATE)
 NumberOfRecordsWithDOCButNoDON = sqldf("SELECT Count(*) FROM Data WHERE DOC_Mean IS NOT NULL And (TDN_Mean IS NULL Or TDN_Mean = '')")
 
 ```
+
+
 
 There are `r NumberOfRecordsWithDOCButNoDON` records with a recorded DON but no TDN value.
 
@@ -150,39 +191,15 @@ GetChemistryComponentQCReportSection = function(ChemistryComponentName){
   print(knitr::kable(dbGetQuery(connection,Sql)))
   cat("\n\n")
   #cat(Sql,"  \n\n")
-  
-  # for(i in 1:nrow(MDLs)) {       # for-loop over the MDLs
-  #   MDL = MDLs$MDL[i]
-  #   CHEM_LAB = MDLs$CHEM_LAB
-  #   cat("Count of ",ChemistryComponentName," records below MDL of ",MDL,"  \n\n")
-  #   Sql = paste("SELECT Count(*) as n  FROM tblWaterChemistry WHERE CHEM_LAB = '",CHEM_LAB,"' And ",ChemistryComponentName,"_MG_L < ",MDL,sep="")
-  #   cat("**Records below MDL: ",ChemistryComponentName,"**  \n\n")
-  #   cat(Sql,"  \n\n")
-  #   Result = dbGetQuery(connection,Sql)
-  #   print(knitr::kable(Result))
-  #   
-  #   # If MDLs are detected then give an idea of how many records
-  #   if(Result$n > 0){
-  #     cat("Summary of ",ChemistryComponentName,"_MG_L > records below MDL by laboratory and year:  \n\n")
-  #     Sql = paste("SELECT CHEM_LAB, COUNT(*) AS n FROM tblWaterChemistry WHERE (CHEM_LAB = 'CCAL') AND (",ChemistryComponentName,"_MG_L < 0.01) GROUP BY CHEM_LAB",sep="")
-  # cat(Sql,"  \n\n")
-  #     print(knitr::kable(dbGetQuery(connection,Sql)))
-  #     cat("  \n\n")
-  #   }
-  # }  
-  
-  
+
   # Comments that might be important to know
   cat("**Comments from the database for: ",ChemistryComponentName,"**  \n\n")
   cat("The comments below may be useful in determining any records to exclude or modify. These comments may provide insight about any outliers or data anomalies.  \n\n")
   Sql = paste("SELECT DISTINCT ",ChemistryComponentName,"_Notes FROM tblWaterChemistry WHERE (",ChemistryComponentName,"_Notes IS NOT NULL) and LTRIM(RTRIM(",ChemistryComponentName,"_Notes)) <> '' And ISNUMERIC(",ChemistryComponentName,"_Notes) = 0 ORDER BY ",ChemistryComponentName,"_Notes",sep="")
   print(knitr::kable(dbGetQuery(connection,Sql)))
   cat("  \n\n")
-  
-  
+
 }
-
-
 
 ```
 
@@ -190,11 +207,51 @@ GetChemistryComponentQCReportSection = function(ChemistryComponentName){
 GetChemistryComponentQCReportSection('DOC')
 GetChemistryComponentQCReportSection('TDN')
 GetChemistryComponentQCReportSection('TN')
+
 ```
+
+### DON
+
+DON is calculated as TN - TDN. A lot of outliers exist, particularly in YUCH which skew DON far to the right.
+
+```{r}
+
+# Box plot of the mean chemical parameter
+ggplot(Data) + 
+ geom_boxplot(aes(y=DON_Mean),na.rm=TRUE) + 
+ theme_minimal()
+
+# Box plots faceted by park
+ggplot(Data) + 
+  geom_boxplot(aes(y=DON_Mean),na.rm=TRUE) + 
+  facet_wrap(vars(PARK)) +
+  theme_minimal()
+
+# Calculate a reasonable bin width for the histogram below
+Binwidth <- (max(Data$DON_Mean,na.rm=TRUE) - min(Data$DON_Mean,na.rm=TRUE)) / ceiling(log2(nrow(Data)) + 1)
+# Plot a histogram showing the distribution of the binned chemical data
+ggplot(Data) + 
+  geom_histogram(aes(x=DON_Mean),binwidth=Binwidth,na.rm=TRUE)  + 
+  theme_minimal()
+  
+# Calculate a reasonable bin width for the histogram below
+Binwidth <- (max(Data$DON_Mean,na.rm=TRUE) - min(Data$DON_Mean,na.rm=TRUE)) / ceiling(log2(nrow(Data)) + 1)
+# Plot a histogram showing the distribution of the binned chemical data
+ggplot(Data) + 
+  geom_histogram(aes(x=DON_Mean),binwidth=Binwidth,na.rm=TRUE)  + 
+  facet_wrap(vars(PARK)) +
+  theme_minimal()
+
+  # Calculate and summarize in a table basic statistics about the chemical component
+  stats = sqldf(paste("SELECT TN_Mean - TDN_Mean As DON FROM Data ORDER BY DON DESC",sep=""))
+  knitr::kable(t(describe(stats)))
+  
+```
+
 
 ## QC: Dissolved Nitrogen Greater Than Total Nitrogen
 
-```{r, echo=FALSE}
+```{r, echo=TRUE}
 # Get a dataset of records having total dissolved nitrogen > total nitrogen
 TDNGTTN = dbGetQuery(connection,"SELECT Park,  [PONDNAME]
       ,[SAMPLEDATE]
@@ -232,7 +289,7 @@ knitr::kable(dbGetQuery(connection,Sql))
 ```
 
 
-```{r, echo=FALSE}
+```{r, echo=FALSE,include=FALSE}
 # I wanted to look at the data too see if there were any spatial explanations for the outliers but it didn't work well
 # and many plots were lacking coordinates.
 # library(ggspatial)
@@ -262,7 +319,10 @@ knitr::kable(dbGetQuery(connection,Sql))
 
 - Some records had a note: "Carbon Analysis run outside of hold time due to instrumentation problems".
 
--   Many records exist with TDN \> TN and should be investigated
+- Many records exist with TDN \> TN and should be investigated
+
+- After calculating DON as TN - TDN I'm not sure this gets us anything since TDN is typically a very large part of DON.
+
 
 # Step 2: Scatter Plots and Regressions
 
@@ -270,7 +330,7 @@ knitr::kable(dbGetQuery(connection,Sql))
 
 ### DOC Vs TDN
 
-```{r, echo=FALSE}
+```{r, echo=TRUE}
 # Plot mean DOC per site and sampling date against mean TDN per site and sampling date
 ggplot(Data) +
   geom_point(aes(x=DOC_Mean,y=TDN_Mean,color=PARK),na.rm=TRUE) +
@@ -301,7 +361,7 @@ ggplot(Data) +
 
 ### DOC Vs TN
 
-```{r, echo=FALSE}
+```{r, echo=TRUE}
 # Plot mean DOC per site and sampling date against mean TN per site and sampling date
 ggplot(Data) +
   geom_point(aes(x=DOC_Mean,y=TN_Mean,color=PARK),na.rm=TRUE) +
@@ -330,6 +390,43 @@ ggplot(Data) +
 
 ```
 
+### DOC Vs DON
+
+DOC vs DON: From the data it seems that TDN is a very large component of TN, tracking it closely, in some cases exceeding it giving negative DON values. I think we need to look at this before concluding anything.
+
+The linear model is significant but R^2 is surprisingly low. 
+
+```{r, echo=TRUE}
+# Plot mean DOC per site and sampling date against mean DON (TN-TDN) per site and sampling date
+ggplot(Data) +
+  geom_point(aes(x=DOC_Mean,y=DON_Mean,color=PARK),na.rm=TRUE) +
+  geom_smooth(aes(x=DOC_Mean,y=DON_Mean),na.rm=TRUE,se =TRUE, method='lm') +
+  theme_minimal()
+
+# Fit a linear regression model
+model <- lm(Data$DOC_Mean ~ Data$DON_Mean, data = Data)
+
+# Display the model summary
+summary(model)
+
+# To see the data:
+#knitr::kable(Data %>% filter(is.na(DOC_Mean) == FALSE & is.na(DON_Mean) == FALSE) %>% select(DOC_Mean,TN_Mean,TDN_Mean,DON_Mean))
+
+```
+
+
+Linear models by Park
+
+```{r}
+# Plot mean DOC per site and sampling date against mean TDN per site and sampling date
+ggplot(Data) +
+  geom_point(aes(x=DOC_Mean,y=DON_Mean),na.rm=TRUE) +
+  geom_smooth(aes(x=DOC_Mean,y=DON_Mean),na.rm=TRUE,se =TRUE, method='lm') +
+  facet_wrap(vars(PARK)) +
+  theme_minimal()
+
+
+```
 
 ## Initial Conclusions
 
@@ -337,4 +434,5 @@ ggplot(Data) +
 
 -   It looks like YUCH has, if not outliers, more extreme values. Need to investigate.
 
+- After calculating DON as TN - TDN I'm not sure this gets us anything since TDN is typically a very large part of DON.
 
