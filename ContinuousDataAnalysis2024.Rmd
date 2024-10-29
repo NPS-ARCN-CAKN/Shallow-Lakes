@@ -1,0 +1,198 @@
+---
+title: ""
+author: ""
+date: ""
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+---
+
+```{r setup, include=FALSE, echo=TRUE}
+
+# Global NA to blank
+options(knitr.kable.NA = '')
+knitr::opts_chunk$set(echo = FALSE)
+
+# Libraries
+library(sqldf)
+library(tidyverse)
+library(odbc)
+library(leaflet)
+library(psych)
+
+# Database connection 
+connection = dbConnect(odbc(),Driver = "Sql Server",Server = "inpyugamsvm01\\nuna", Database = "AK_ShallowLakes")
+
+```
+
+# Continuous data analysis, 2024
+
+## Original request
+
+I am doing a science for lunch on November 4. I would like to do an analysis of the ProDss data at the 0.5 m depth across all the continuous monitoring lakes in CAKN and ARCN. I would like an export of all the data separated into two different tables: one for spring and another for fall.
+
+I would then like to run a regression on each of these different parameters. I am most interested in temperature, spcond and pH. At this time I don't want to try to tackle all the other depths.
+
+Nic- can you create an export of this once the 2024 data are in the database? I think this should be fairly simple. 
+
+Scott- if Nick can get this data would you be able to batch process this in R?
+
+Let me know if you have any questions. If neither of you can help, I will work with James, I have been gifted a few hours of his time to compensate the lack of having an employee to help with this. I appreciate your help; I recognize that my lack of an employee is adding additional burden to you both.
+
+I have been tasked by the region to present these data in preparation for a climate change workshop in February. I wasn't given much notice for this.
+
+Thanks
+Amy
+
+## Nick's response
+
+I'm working on processing the 2024 KorDSS continuous profile data.
+
+Last week I finished Python code to convert the Trimble samples feature class (created with Pathfinder by processed by Joel) to a format (from the older Positions software) that could be processed and the imported into the database. I imported the 100 NOAT sample events into table 'tblWaterSamples'.
+
+NOTE: The only reason this processing is important is because in the database the water sample events must be uploaded before the profiles.
+
+However, the spring and fall water sample events (retrievals and deployments), in Trimble, from the continuous data have not been processed yet by Pathfinder. I've sent these to Joel for processing with Pathfinder. He says that he will work on this today. If necessary, I'll figure out how to process them myself with my own installed version of Pathfinder.
+
+The processing of the KorDSS profile data is fast with the VBA utility tool; I ran this data through this utility this morning and will now look for anomalies in the calculated depths. If necessary, depending on how complicated you'd like to have the data exported, this profile data could be appended to any data export; if Joel doesn't get me his processing soon enough (which I think he will).
+
+Nick
+
+## My clarification
+
+Hey Nick. I got Amy's request and your response. I am not up at all on ProDSS which is, I think, the YSI? I see logger deployments and sites, but the continuous data tables are all empty. I think I need an orientation.
+ 
+Those empty continuous tables are not used; that data is in aquarius. Amy is talking about the water profile data 'tblWaterProfiles' related to the water samples table 'tblWaterSamples'. Each event is either continuous or not depending on the value set in the 'tblEvents' column 'CONTMONVISIT' (which indicates instrument deployment or retrieveal). Also, the continuous sites, deployments, and loggers tables aren't related to her requirements.
+ 
+Yes, the ProDSS is YSI.
+ 
+KorDSS is the software that is used to set up the sensors and export the data.
+ 
+# Data Profiles By Lake
+
+```{r, label="Get the visits timeline dataset"}
+# Get the continuous water quality visits history for the lakes
+Sql = "SELECT  TOP (1000) w.PONDNAME, YEAR(w.SAMPLEDATE) AS Year, COUNT(*) AS n
+FROM   tblWaterProfiles AS w INNER JOIN
+       tblEvents AS e ON w.PONDNAME = e.PONDNAME
+WHERE  (e.CONTMONVISIT = 1)
+GROUP BY w.PONDNAME, YEAR(w.SAMPLEDATE)
+ORDER BY w.PONDNAME, YEAR(w.SAMPLEDATE)"
+Visits = dbGetQuery(connection,Sql)
+
+```
+
+```{r,label="Get water profile chemical dataset"}
+# Get wate profile parameters by depth for the continuous water quality lake visits
+Sql = " SELECT TOP (1000) [PONDNAME]
+,[SAMPLEDATE]
+,[SAMPLEDEPTH] * -1 as SAMPLEDEPTH
+,[Temperature_Mean]
+,[Temperature_Min]
+,[Temperature_Max]
+,[Temperature_SD]
+,[Temperature_n]
+,[pH_Mean]
+,[pH_Min]
+,[pH_Max]
+,[pH_SD]
+,[pH__n]
+,[SpCond_Mean]
+,[SpCond_Min]
+,[SpCond_Max]
+,[SpCond_SD]
+,[SpCond__n]
+,[DO_Mean]
+,[DO_Min]
+,[DO_Max]
+,[DO_SD]
+,[DO__n]
+,[DO_Pct_Mean]
+,[DO_Pct_Min]
+,[DO_Pct_Max]
+,[DO_Pct_SD]
+,[DO_Pct__n]
+FROM [AK_ShallowLakes].[dbo].[Summary_WaterProfileStatisticsByLake]
+ORDER BY PONDNAME,SAMPLEDATE,SAMPLEDEPTH"
+Means = dbGetQuery(connection,Sql)
+```
+
+```{r, label="Visits summary",results='asis'}
+
+GetReportSectionForLake = function(Lake){
+  cat("## ",Lake,"  \n\n")
+  
+  # Plot the visits history
+  # cat("Site visit history and number of records collected  \n\n")
+  # print(
+  #   ggplot(Visits %>% filter(PONDNAME==Lake)) +
+  #     geom_col(aes(x=Year,y=n),na.rm=TRUE,width = 0.5) +
+  #     ggtitle(paste(Lake,sep="")) +
+  #     theme_minimal() +
+  #     ylab("Number of records") +
+  #     theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +
+  #     scale_x_continuous(breaks = seq(min(Visits$Year), max(Visits$Year), by = 1))
+  #   )
+  # cat("  \n\n")
+  
+  # Plot a parameter vs depth plot for each parameter 
+  for (ColumnName in colnames(Means)) {
+    if(grepl("_Mean",ColumnName) == TRUE){
+      
+      cat("### ",gsub("_Mean","",ColumnName),"  \n\n")
+      
+      # Get the data for the lake and parameter
+      Sql = paste("SELECT PONDNAME,SAMPLEDATE,SAMPLEDEPTH as [Depth (m)],",ColumnName," FROM Means WHERE PONDNAME='",Lake,"' ORDER BY SAMPLEDEPTH",sep="")
+      data = sqldf(Sql)
+      
+      # Plot it
+      print(
+        ggplot(data) +
+          geom_path(aes_string(x=ColumnName,y="`Depth (m)`",linetype="SAMPLEDATE")) +
+          theme_minimal() +
+          ggtitle(paste(Lake," ",ColumnName," vs. Depth",sep="")) 
+      )
+      cat("  \n\n")
+    }
+  }
+}
+
+GetReportSectionForLake('BELA-033')
+
+```
+
+
+
+```{r, label="Create site visit plots",results='asis'}
+# Loop through each row
+Lakes = Visits %>% distinct(PONDNAME)
+for (i in 1:nrow(Lakes)) {
+  Lake = Lakes[i,"PONDNAME"]
+  GetReportSectionForLake(Lake)
+}
+
+
+```
+
+```{r}
+Sql = "SELECT        TOP (1000) w.PONDNAME, CONVERT(Date, w.SAMPLEDATE) AS SAMPLEDATE, w.SAMPLEDEPTH * -1 As SAMPLEDEPTH, AVG(w.TEMPERATURE) Temperature_Mean, AVG(w.PH) AS pH_Mean, AVG(w.pH_mV) AS pH_mV_Mean, AVG(w.SPECIFICCONDUCTANCE) AS SpCond_Mean, 
+AVG(w.DO) AS DO_Mean, AVG(w.DO_PCT) AS DO_PCT_Mean
+FROM            tblWaterProfiles AS w INNER JOIN
+                         tblEvents AS e ON w.PONDNAME = e.PONDNAME
+WHERE        (e.CONTMONVISIT = 1)
+GROUP BY w.PONDNAME, CONVERT(Date, w.SAMPLEDATE), w.SAMPLEDEPTH
+ORDER BY w.PONDNAME, SAMPLEDATE, w.SAMPLEDEPTH"
+Means = dbGetQuery(connection,Sql)
+
+Lake = 'BELA-033'
+ggplot(Means %>% filter(PONDNAME==Lake)) +
+  geom_line(aes(x=Temperature_Mean,y=SAMPLEDEPTH)) +
+  theme_minimal() +
+  ggtitle(Lake)
+
+
+```
+
+
