@@ -165,25 +165,27 @@ ORDER BY PONDNAME,SAMPLEDATE,SAMPLEDEPTH",sep="")
         ggplot(data) +
           geom_boxplot(aes_string(x = 'Season', y = ColumnName),na.rm=TRUE) +
           stat_compare_means(aes_string(x = 'Season', y = ColumnName),na.rm=TRUE,method = "t.test") +  # Add t-test comparison
-          theme_minimal()
+          theme_minimal() +
+          ggtitle(paste(Lake," Seasonal difference in ",ParameterName," at 0.5m depth with t-test significance level",sep="")) 
       )
-      cat("\n\nFigure ",Lake,"-",FigureCounter,"Depth profile by season, ",ParameterName,".  \n\n")
+      cat("\n\nFigure ",Lake,"-",FigureCounter,". Seasonal difference in ",ParameterName," at 0.5m depth with t-test significance level in lake ",Lake,".  \n\n")
       FigureCounter = FigureCounter + 1
       
       # Perform t-test
-      cat("**T-Test**  \n\n")
-      t_test_result = ''
-      tryCatch(
-        t_test_result <- t.test(data[[ColumnName]] ~ Season, data = data),
-      error=function(e)
-        t_test_result = e
-      )
-      # Print the result
-      cat("  \n\n")
-      print(t_test_result)
-      cat("  \n\n")
-      
-      
+      t_test_result = tryCatch({
+        t_test_result <- t.test(data[[ColumnName]] ~ Season, data = data)
+        cat("**T-Test**  \n\n")
+        # Print the result
+        cat("**Statistic:**", t_test_result$statistic, "  \n")
+        cat("**P-Value:**", t_test_result$p.value, "  \n")
+        cat("**Confidence Interval:**", t_test_result$conf.int, "  \n")
+        cat("**Means:**", t_test_result$estimate, "  \n\n")
+        cat("  \n\n")
+      }, error = function(e) {
+        cat("Error: ", conditionMessage(e))
+        return(NA)
+      })
+
       # Plot the parameter for the lake by season
       cat("#### Depth profile  \n\n")
       cat("'Season' is broadly defined as Month <=7 = Spring, Month > 7 = Fall.   \n\n")
@@ -201,7 +203,7 @@ ORDER BY PONDNAME,SAMPLEDATE,SAMPLEDEPTH",sep="")
   }
 }
 
-#GetReportSectionForLake('BELA-001')
+#  GetReportSectionForLake('YUCH-004')
 
 # Lake='YUCH-004'
 # ColumnName='DO_Mean'
@@ -238,6 +240,7 @@ for (i in 1:nrow(Lakes)) {
   Lake = Lakes[i,"PONDNAME"]
   GetReportSectionForLake(Lake)
 }
+#GetReportSectionForLake('YUCH-004')
 
 ```
 
