@@ -21,15 +21,423 @@ library(tidyverse)
 library(odbc)
 library(leaflet)
 library(psych)
+library(GGally)
+library(ggpubr)
 
 # Database connection 
 connection = dbConnect(odbc(),Driver = "Sql Server",Server = "inpyugamsvm01\\nuna", Database = "AK_ShallowLakes")
+
+# Figure and Table Counters
+FigureCounter = 1
+TableCounter = 1
+
+```
+
+```{r,label="Get water profile chemical dataset"}
+# Get wate profile parameters by depth for the continuous water quality lake visits
+Sql = " SELECT [PONDNAME]
+,[SAMPLEDATE]
+,Month(SampleDate) as [Month]
+,Case When Month(SampleDate) < 7 Then 'Spring' Else 'Fall' End as Season
+,[SAMPLEDEPTH]
+,[Temperature_Mean]
+,[Temperature_Min]
+,[Temperature_Max]
+,[Temperature_SD]
+,[Temperature_n]
+,[pH_Mean]
+,[pH_Min]
+,[pH_Max]
+,[pH_SD]
+,[pH_n]
+,[SpCond_Mean]
+,[SpCond_Min]
+,[SpCond_Max]
+,[SpCond_SD]
+,[SpCond_n]
+,[DO_Mean]
+,[DO_Min]
+,[DO_Max]
+,[DO_SD]
+,[DO_n]
+,[DO_Pct_Mean]
+,[DO_Pct_Min]
+,[DO_Pct_Max]
+,[DO_Pct_SD]
+,[DO_Pct_n]
+FROM [AK_ShallowLakes].[dbo].[Summary_WaterProfileStatisticsByLake]
+ORDER BY PONDNAME,SAMPLEDATE,SAMPLEDEPTH"
+Means = dbGetQuery(connection,Sql)
+
+# Make a counter to keep track of the QC test numbers
+QCNum = 1
+```
+
+```{r, label="Get the visits timeline dataset"}
+# Get the continuous water quality visits history for the lakes
+Sql = "SELECT  w.PONDNAME, YEAR(w.SAMPLEDATE) AS Year, COUNT(*) AS n
+FROM   tblWaterProfiles AS w INNER JOIN
+       tblEvents AS e ON w.PONDNAME = e.PONDNAME
+WHERE  (e.CONTMONVISIT = 1)
+GROUP BY w.PONDNAME, YEAR(w.SAMPLEDATE)
+ORDER BY w.PONDNAME, YEAR(w.SAMPLEDATE)"
+Visits = dbGetQuery(connection,Sql)
 
 ```
 
 # Continuous data analysis, 2024
 
-## Original request
+Objective: An analysis of the ProDss data at the 0.5 m depth across all the continuous monitoring lakes in CAKN and ARCN. Regress temperature, spcond and pH.
+
+# Data Profiles By Lake
+
+```{r, label="Visits summary",results='asis'}
+
+GetReportSectionForLake = function(Lake){
+  FigureCounter = 1
+  cat("## ",Lake,"  \n\n")
+  
+  # Plot the visits history
+  cat("### Site visit history and number of records collected  \n\n")
+  print(
+    ggplot(Visits %>% filter(PONDNAME==Lake)) +
+      geom_col(aes(x=Year,y=n),na.rm=TRUE,width = 0.5) +
+      ggtitle(paste(Lake," Site visit history and sampling intensity",sep="")) +
+      theme_minimal() +
+      ylab("Number of records") +
+      theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +
+      scale_x_continuous(breaks = seq(min(Visits$Year), max(Visits$Year), by = 1))
+    )
+  cat("\n\nFigure ",Lake,"-",FigureCounter,". Lake visitation history, ",Lake,".  \n\n")
+  FigureCounter = FigureCounter + 1
+  
+  
+  # Plot a parameter vs depth plot for each parameter
+  # Loop through the column names
+  for (ColumnName in colnames(Means)) {
+    
+    # Isolate the parameters (they have '_Mean' suffixes)
+    if(grepl("_Mean",ColumnName) == TRUE){
+      
+      # Get a more readable parameter name by removing the '_Mean' suffix and output it as a header
+      ParameterName = gsub("_Mean","",ColumnName)
+      cat("### ",ParameterName,"  \n\n")
+      
+      # Get the data for the lake and parameter
+      Sql = paste("SELECT PONDNAME,SAMPLEDATE,SAMPLEDEPTH * -1 as [Depth (m)],Season
+,",ColumnName,",",gsub("_Mean","_SD",ColumnName),",",gsub("_Mean","_Min",ColumnName),",",gsub("_Mean","_Max",ColumnName)," ,",gsub("_Mean","_n",ColumnName)," 
+ FROM Means WHERE PONDNAME='",Lake,"' AND ",ColumnName," IS NOT NULL 
+ORDER BY PONDNAME,SAMPLEDATE,SAMPLEDEPTH",sep="")
+      data = sqldf(Sql)
+
+      
+      # Plot a histogram showing the distribution of the binned parameter data
+      cat("#### Distribution of values  \n\n")
+      # Generate some reasonable bin widths for plotting a histogram of the parameter data
+      Binwidth <- (max(data[ColumnName],na.rm=TRUE) - min(data[ColumnName],na.rm=TRUE)) / ceiling(log2(nrow(data)) + 1)
+      print(
+        ggplot(data) + 
+          geom_histogram(aes_string(x=ColumnName),binwidth=Binwidth,na.rm=TRUE) + 
+          facet_wrap(vars(Season)) +
+          ylab(paste("Count (",nrow(data)," non-null rows)",sep="")) + 
+          theme_minimal()) +
+          ggtitle(paste(Lake,": Distribution Of Values: ",ParameterName,sep="")
+      ) 
+      cat("\n\nFigure ",Lake,"-",FigureCounter,"Histogram of ",ParameterName,". Bin width = ",Binwidth,".  \n\n")
+      FigureCounter = FigureCounter + 1
+      
+      
+      
+      # Calculate and summarize in a table basic statistics about the chemical component
+      # cat("#### Basic statistics  \n\n")
+      # cat("\n\nTable ",Lake,"-1. Basic statistics, ",ParameterName,".  \n\n")
+      # Stats = describe(data[ColumnName])
+      # Stats = Stats %>% select(mean,	sd,	min,	max,	range,	skew,	kurtosis,	se,n)
+      # print(knitr::kable(t(Stats)))
+      # cat("  \n\n")
+
+      cat("#### Seasonal difference at 0.5m depth  \n\n")
+      cat("'Season' is broadly defined as Month <=7 = Spring, Month > 7 = Fall.   \n\n")
+
+      
+      # Show a boxplot with t-test result
+      print(
+        ggplot(data) +
+          geom_boxplot(aes_string(x = 'Season', y = ColumnName),na.rm=TRUE) +
+          stat_compare_means(aes_string(x = 'Season', y = ColumnName),na.rm=TRUE,method = "t.test") +  # Add t-test comparison
+          theme_minimal()
+      )
+      cat("\n\nFigure ",Lake,"-",FigureCounter,"Depth profile by season, ",ParameterName,".  \n\n")
+      FigureCounter = FigureCounter + 1
+      
+      # Perform t-test
+      cat("**T-Test**  \n\n")
+      t_test_result = ''
+      tryCatch(
+        t_test_result <- t.test(data[[ColumnName]] ~ Season, data = data),
+      error=function(e)
+        t_test_result = e
+      )
+      # Print the result
+      cat("  \n\n")
+      print(t_test_result)
+      cat("  \n\n")
+      
+      
+      # Plot the parameter for the lake by season
+      cat("#### Depth profile  \n\n")
+      cat("'Season' is broadly defined as Month <=7 = Spring, Month > 7 = Fall.   \n\n")
+      print(
+        ggplot(data) +
+          geom_path(aes_string(x=ColumnName,y="`Depth (m)`",color='Season',linetype='SAMPLEDATE'),na.rm=TRUE,size = 1) +
+          scale_color_manual(values = c("Spring" = "darkgreen", "Fall" = "brown")) +
+          theme_minimal() +
+          ggtitle(paste(Lake," Depth Profile by season: ",ParameterName,sep="")) 
+      )
+      cat("\n\nFigure ",Lake,"-",FigureCounter,"Depth profile by season, ",ParameterName,".  \n\n")
+      FigureCounter = FigureCounter + 1
+      
+    }
+  }
+}
+
+#GetReportSectionForLake('BELA-001')
+
+# Lake='YUCH-004'
+# ColumnName='DO_Mean'
+# # Get the data for the lake and parameter
+# Sql = paste("SELECT PONDNAME,SAMPLEDATE,SAMPLEDEPTH * -1 as [Depth (m)],Season
+# ,",ColumnName,",",gsub("_Mean","_SD",ColumnName),",",gsub("_Mean","_Min",ColumnName),",",gsub("_Mean","_Max",ColumnName)," ,",gsub("_Mean","_n",ColumnName),"
+#  FROM Means WHERE PONDNAME='",Lake,"' AND ",ColumnName," IS NOT NULL
+# ORDER BY PONDNAME,SAMPLEDATE,SAMPLEDEPTH",sep="")
+# data = sqldf(Sql)
+
+
+
+#   
+# # Perform t-test
+# t_test_result <- t.test(data[[ColumnName]] ~ Season, data = data)
+# 
+# # Print the result
+# print(t_test_result)
+
+
+# 
+#       # Perform ANOVA
+# anova_result <- aov(DO_Mean ~ Season, data = data)
+# 
+# # Print the summary of ANOVA
+# summary(anova_result)
+
+```
+
+```{r, label="Create site visit plots",results='asis'}
+# Loop through each row
+Lakes = Visits %>% distinct(PONDNAME)
+for (i in 1:nrow(Lakes)) {
+  Lake = Lakes[i,"PONDNAME"]
+  GetReportSectionForLake(Lake)
+}
+
+```
+
+# QC Checks on the data
+
+The first step is to check the data quality. 
+
+
+
+
+
+
+
+## QC-`r QCNum`: Water profiles data collection time span
+
+This check shows the timespan in years of water profile data data collection.
+
+```{r}
+Sql = "SELECT Min(Year(SAMPLEDATE)) As Earliest
+,Max(Year(SAMPLEDATE)) As Latest
+,Max(Year(SAMPLEDATE)) - Min(Year(SAMPLEDATE)) As [Years]
+FROM tblWaterProfiles"
+knitr::kable(dbGetQuery(connection,Sql),caption=paste("Table QC-",QCNum,": Visits history for continuous water quality lakes.",sep=""))
+QCNum = QCNum + 1
+```
+
+## QC-`r QCNum`: Water profiles data collection time span by Park
+
+This check shows the timespan in years of water profile data data collection by Park.
+
+```{r}
+Sql = "SELECT tblPonds.PARK
+, MIN(YEAR(tblWaterProfiles.SAMPLEDATE)) AS Earliest
+, MAX(YEAR(tblWaterProfiles.SAMPLEDATE)) AS Latest
+, MAX(YEAR(tblWaterProfiles.SAMPLEDATE)) - MIN(YEAR(tblWaterProfiles.SAMPLEDATE)) AS Years
+FROM tblWaterProfiles 
+INNER JOIN tblPonds ON tblWaterProfiles.PONDNAME = tblPonds.PONDNAME
+GROUP BY tblPonds.PARK
+ORDER BY Years DESC"
+knitr::kable(dbGetQuery(connection,Sql),caption=paste("Table QC-",QCNum,": Visits history for continuous water quality lakes by Park.",sep=""))
+QCNum = QCNum + 1
+```
+
+
+## QC-`r QCNum`: Number Of Continuous Water Profile Visits By Lake (Which lakes have the longest history?)
+
+This check shows the total number of visits, number of observations and the visitation time span for water profile data collection efforts.
+
+```{r}
+Sql = "SELECT * FROM QC_tblWaterProfiles_VisitationHistoryByLake ORDER BY Visits DESC"
+knitr::kable(dbGetQuery(connection,Sql),caption=paste("Table QC-",QCNum,": Visits history for continuous water quality lakes.",sep=""))
+QCNum = QCNum + 1
+```
+
+## QC-`r QCNum`: Minimum and maximum lake depths
+
+Check the minimum and maximum lake depths for anomalous values
+
+```{r}
+Sql = "SELECT * FROM QC_tblWaterProfiles_MinMaxDepth"
+knitr::kable(dbGetQuery(connection,Sql),caption=paste("Table QC-",QCNum,": Visits history for continuous water quality lakes.",sep=""))
+QCNum = QCNum + 1
+```
+
+## QC-`r QCNum`: Lake depth intervals
+
+Check the minimum and maximum lake depths for anomalous values
+
+```{r,echo=FALSE,fig.cap=paste("\n\nFigure ",FigureCounter,". Histogram of sampling depths.",sep="")}
+Depths = Means %>% select(SAMPLEDEPTH)
+
+# Plot the distribution of depths
+ggplot(Depths) + 
+  geom_histogram(aes(x=SAMPLEDEPTH),binwidth=1,na.rm=TRUE) + 
+  ylab(paste("Count")) + 
+  xlab("Depth (m)") + 
+  scale_x_continuous(breaks = seq(0.5, 10, by = 0.5)) +
+  theme_minimal() +
+  ggtitle(paste("Distribution of sampling depths",sep="")) 
+
+FigureCounter = FigureCounter + 1  
+QCNum = QCNum + 1
+```
+
+## QC-`r QCNum`: Checks on the 0.5m depth dataset
+
+This section extracts only the data at the 0.5m depth since this is what Amy is most interested in. We're looking for anomalous values, outliers or strange patterns that might indicate data quality issues.
+
+```{r,results='asis'}
+Sql = "SELECT * FROM Means WHERE SAMPLEDEPTH = 0.5"
+Point5Data = sqldf(Sql)
+
+# Loop through the column names
+for (ColumnName in colnames(Point5Data)) {
+  # Isolate the parameters (they have '_Mean' suffixes)
+  if(grepl("_Mean",ColumnName) == TRUE){
+  
+    # Get a more readable parameter name by removing the '_Mean' suffix and output it as a header
+    ParameterName = gsub("_Mean","",ColumnName)
+    cat("### ",ParameterName,"  \n\n")
+    
+    # Plot a histogram showing the distribution of the binned parameter data
+    cat("#### Distribution of values  \n\n")
+    # Generate some reasonable bin widths for plotting a histogram of the parameter data
+    Binwidth <- (max(Point5Data[ColumnName],na.rm=TRUE) - min(Point5Data[ColumnName],na.rm=TRUE)) / ceiling(log2(nrow(Point5Data)) + 1)
+    print(ggplot(Point5Data) + 
+      geom_histogram(aes_string(x=ColumnName),binwidth=Binwidth,na.rm=TRUE) + 
+      ylab(paste("Count (",nrow(Point5Data)," non-null rows)",sep="")) + 
+      theme_minimal()) +
+      ggtitle(paste("Distribution Of Values: ",ParameterName,sep="")) 
+    cat("\n\nFigure ",FigureCounter,"Histogram of ",ParameterName,". Bin width = ",Binwidth,".  \n\n")
+    FigureCounter = FigureCounter + 1
+    
+    # Calculate and summarize in a table basic statistics about the chemical component
+    cat("#### Basic statistics  \n\n")
+    cat("\n\nTable ",TableCounter,". Basic statistics, ",ParameterName,".  \n\n")
+    print(knitr::kable(t(describe(Point5Data[,ColumnName]))))
+    cat("  \n\n")
+    TableCounter = TableCounter + 1
+    
+    
+    # Plot a histogram showing the distribution of the binned parameter data by season
+    cat("#### Distribution of values  \n\n")
+    # Generate some reasonable bin widths for plotting a histogram of the parameter data
+    Binwidth <- (max(Point5Data[ColumnName],na.rm=TRUE) - min(Point5Data[ColumnName],na.rm=TRUE)) / ceiling(log2(nrow(Point5Data)) + 1)
+    print(ggplot(Point5Data) + 
+      geom_histogram(aes_string(x=ColumnName),binwidth=Binwidth,na.rm=TRUE) + 
+      ylab(paste("Count (",nrow(Point5Data)," non-null rows)",sep="")) + 
+      facet_wrap(vars(Season)) +
+      theme_minimal()) +
+      ggtitle(paste("Distribution Of Values by Park: ",ParameterName,sep="")) 
+    cat("\n\nFigure ",FigureCounter,"Histogram of ",ParameterName," by season. Bin width = ",Binwidth,".  \n\n")
+    FigureCounter = FigureCounter + 1
+    
+    # Calculate and summarize in a table basic statistics about the chemical component
+    cat("#### Basic statistics, Spring  \n\n")
+    cat("\n\nTable ",TableCounter,". Basic statistics, ",ParameterName,".  \n\n")
+    SpringData = Point5Data %>% filter(Season=="Spring") %>% select(!!sym(ColumnName),Season)
+    print(knitr::kable(t(describe(SpringData))))
+    cat("  \n\n")
+    TableCounter = TableCounter + 1
+    
+    # Calculate and summarize in a table basic statistics about the chemical component
+    cat("#### Basic statistics, Fall  \n\n")
+    cat("\n\nTable ",TableCounter,". Basic statistics, ",ParameterName,".  \n\n")
+    FallData = Point5Data %>% filter(Season=="Fall") %>% select(!!sym(ColumnName),Season)
+    print(knitr::kable(t(describe(FallData))))
+    cat("  \n\n")
+    TableCounter = TableCounter + 1
+  }
+}
+
+QCNum = QCNum + 1
+```
+
+## QC-`r QCNum`: Field comments
+
+Field comments often reveal and/or document data defects. There are too many to show here so I put them in Appendix A. 
+
+
+
+## QC Checks Summary
+
+A partial compilation of the 500+ field comments from Appendix A that may reveal defects (tblWaterProfiles is not set up for data quality flagging, if anything needs to be fixed then now is the time):
+
+pH readings may be unreliable.  
+Be wary of the DO measurements... looks like the DO didn’t recover from the deeper measurements of the previous profile.  
+no depth sensor to verify depths.  
+DO and Temp may still be stabilizing.  
+DO had probably not yet stabilized.
+DO looks high; probably had not yet stabilized.
+DO may be drifting down; pH readings unreliable.
+DO may not yet have stabilized. pH appears to be drifting upwards.
+DO measurement is correct; sonde not on bottom during measurement.
+DO measurement is suspect.
+DO measurements seem implausible; may be down in the muck.
+The DO appears anomalous
+Drifting.
+Sonde may be on bottom.  
+Sonde may have been in the muck
+There may be scope on the line; depth sensor recorded X.Xm.
+Lake very shallow; only surface sample possible.
+Looks like pH is oscillating.
+May have been collected before DO probe had stabilized. pH readings may be unreliable
+Measurement appears to have been collected before probes had stabilized.
+TAKEN FROM INSIDE UPWELLINGS
+Windy
+
+
+# Apendix A: Field data comments
+
+The comments below may be useful in deciding if records need repair or exclusion from analysis.
+
+```{r}
+knitr::kable(dbGetQuery(connection,"SELECT Distinct PROFILE_COMMENTS FROM tblWaterProfiles WHERE NOT PROFILE_COMMENTS IS NULL And NOT PROFILE_COMMENTS = '' ORDER BY PROFILE_COMMENTS"))
+```
+
+# Appendix B: Correspondence regarding the analysis
+
+## Original request from Amy
 
 I am doing a science for lunch on November 4. I would like to do an analysis of the ProDss data at the 0.5 m depth across all the continuous monitoring lakes in CAKN and ARCN. I would like an export of all the data separated into two different tables: one for spring and another for fall.
 
@@ -69,130 +477,77 @@ Those empty continuous tables are not used; that data is in aquarius. Amy is tal
 Yes, the ProDSS is YSI.
  
 KorDSS is the software that is used to set up the sensors and export the data.
- 
-# Data Profiles By Lake
 
-```{r, label="Get the visits timeline dataset"}
-# Get the continuous water quality visits history for the lakes
-Sql = "SELECT  TOP (1000) w.PONDNAME, YEAR(w.SAMPLEDATE) AS Year, COUNT(*) AS n
-FROM   tblWaterProfiles AS w INNER JOIN
-       tblEvents AS e ON w.PONDNAME = e.PONDNAME
-WHERE  (e.CONTMONVISIT = 1)
-GROUP BY w.PONDNAME, YEAR(w.SAMPLEDATE)
-ORDER BY w.PONDNAME, YEAR(w.SAMPLEDATE)"
-Visits = dbGetQuery(connection,Sql)
+## Amy's clarification on which sites to analyze
 
-```
+The continuous monitoring deploys occur in either May/June depending on spring conditions or September during the fall. This task may be slightly trickier than I thought, the user has to note that it was a continuous monitoring event in the database so some of these events might be missed due to data entry errors.
 
-```{r,label="Get water profile chemical dataset"}
-# Get wate profile parameters by depth for the continuous water quality lake visits
-Sql = " SELECT TOP (1000) [PONDNAME]
-,[SAMPLEDATE]
-,[SAMPLEDEPTH] * -1 as SAMPLEDEPTH
-,[Temperature_Mean]
-,[Temperature_Min]
-,[Temperature_Max]
-,[Temperature_SD]
-,[Temperature_n]
-,[pH_Mean]
-,[pH_Min]
-,[pH_Max]
-,[pH_SD]
-,[pH__n]
-,[SpCond_Mean]
-,[SpCond_Min]
-,[SpCond_Max]
-,[SpCond_SD]
-,[SpCond__n]
-,[DO_Mean]
-,[DO_Min]
-,[DO_Max]
-,[DO_SD]
-,[DO__n]
-,[DO_Pct_Mean]
-,[DO_Pct_Min]
-,[DO_Pct_Max]
-,[DO_Pct_SD]
-,[DO_Pct__n]
-FROM [AK_ShallowLakes].[dbo].[Summary_WaterProfileStatisticsByLake]
-ORDER BY PONDNAME,SAMPLEDATE,SAMPLEDEPTH"
-Means = dbGetQuery(connection,Sql)
-```
+These are the continuous monitoring sites:
+BELA-088
+BELA-108
+DENA-023
+DENA-018
+KOVA-085
+KOVA-086
+NOAT-052
+NOAT-107
+WRST-005
+WRST-016
+YUCH-004
+YUCH-005
+YUCH-082
+YUCH-083
 
-```{r, label="Visits summary",results='asis'}
+There are a handful of other lakes that we tried monitoring continuously but we had deployment problems so we changed sites. These sites all have reasonable long deployment records.
 
-GetReportSectionForLake = function(Lake){
-  cat("## ",Lake,"  \n\n")
-  
-  # Plot the visits history
-  # cat("Site visit history and number of records collected  \n\n")
-  # print(
-  #   ggplot(Visits %>% filter(PONDNAME==Lake)) +
-  #     geom_col(aes(x=Year,y=n),na.rm=TRUE,width = 0.5) +
-  #     ggtitle(paste(Lake,sep="")) +
-  #     theme_minimal() +
-  #     ylab("Number of records") +
-  #     theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5)) +
-  #     scale_x_continuous(breaks = seq(min(Visits$Year), max(Visits$Year), by = 1))
-  #   )
-  # cat("  \n\n")
-  
-  # Plot a parameter vs depth plot for each parameter 
-  for (ColumnName in colnames(Means)) {
-    if(grepl("_Mean",ColumnName) == TRUE){
-      
-      cat("### ",gsub("_Mean","",ColumnName),"  \n\n")
-      
-      # Get the data for the lake and parameter
-      Sql = paste("SELECT PONDNAME,SAMPLEDATE,SAMPLEDEPTH as [Depth (m)],",ColumnName," FROM Means WHERE PONDNAME='",Lake,"' ORDER BY SAMPLEDEPTH",sep="")
-      data = sqldf(Sql)
-      
-      # Plot it
-      print(
-        ggplot(data) +
-          geom_path(aes_string(x=ColumnName,y="`Depth (m)`",linetype="SAMPLEDATE")) +
-          theme_minimal() +
-          ggtitle(paste(Lake," ",ColumnName," vs. Depth",sep="")) 
-      )
-      cat("  \n\n")
-    }
-  }
-}
+## Amy 2024-10-31
 
-GetReportSectionForLake('BELA-033')
+Looks like you have grouped all the continuous data into a single analysis, I am looking for lake by lake comparisons.  These results are interesting, I am more interested in changes over time? Perhaps we do this same analysis by lake?
+
+I'm guessing each of these scripts gives skewness and kurtosis automatically, some water chemistry is notoriously skewed, especially in Alaska, where concentrations are often near zero (no -values are possible and we have detection limits). There are two ways to get around this: non-parametric statistics or transforming our data. pH is already normally distributed because it is the -log of the hydrogen ion concentration.
+
+The last time I did an analysis we used thiel sen slopes, the limitation to these analyses is that all measurements have to be in the same direction or you get insignificant results. I would like to try more a conventional parametric approach this time.  To do so we would need to transform several parameters (SPcond and all the other stuff like TN, TP, Ca....). 
+
+I am not sure how much of this you are interested in pursuing, ultimately what I would like to do is a time-series analysis on each lake  the fall data and a separate analysis using the spring data. I think thus far you are just looking at the four-basic parameters from the profiles. At some point I would like to expand this to include the other constituents (TN, TP...)
+
+Thanks for doing this it is very helpful
+
+Amy
+
+```{r, echo=FALSE,warning=FALSE,fig.cap=paste("Figure ",FigureCounter,". Correlation matrix among parameters.",sep="")}
+# Analysis
+
+## Correlation and regression of each parameter against the others
+
+
+# Plot each parameter against the others 
+# ggpairs(MeansDataset, 
+#         upper = list(continuous = wrap("cor", size = 3),na.rm=TRUE),
+#         lower = list(continuous = wrap("smooth", method = "lm", se = TRUE,size=0.5,color="gray"),na.rm=TRUE)) +
+#   theme_minimal()
+# FigureCounter = FigureCounter + 1
+
+# Do more or less the same thing using R's pairs() function, but without regression lines and correlation coefficients
+# Scatter everything against everything else
+#pairs(MeansDataset)
 
 ```
 
+```{r, echo=FALSE,results='asis'}
+## Seasonality of parameters
+# for (Parameter in c("Temperature_Mean","pH_Mean","DO_Mean","SpCond_Mean")){
+#   cat("### ",Parameter,"  \n\n")
+#   print(
+#     ggplot(Point5Data) +
+#       #geom_point(aes_string(x='Season',y=Parameter)) +
+#       geom_boxplot(aes_string(x='Season',y=Parameter)) +
+#       theme_minimal()
+#   )
+# }
 
-
-```{r, label="Create site visit plots",results='asis'}
-# Loop through each row
-Lakes = Visits %>% distinct(PONDNAME)
-for (i in 1:nrow(Lakes)) {
-  Lake = Lakes[i,"PONDNAME"]
-  GetReportSectionForLake(Lake)
-}
 
 
 ```
 
-```{r}
-Sql = "SELECT        TOP (1000) w.PONDNAME, CONVERT(Date, w.SAMPLEDATE) AS SAMPLEDATE, w.SAMPLEDEPTH * -1 As SAMPLEDEPTH, AVG(w.TEMPERATURE) Temperature_Mean, AVG(w.PH) AS pH_Mean, AVG(w.pH_mV) AS pH_mV_Mean, AVG(w.SPECIFICCONDUCTANCE) AS SpCond_Mean, 
-AVG(w.DO) AS DO_Mean, AVG(w.DO_PCT) AS DO_PCT_Mean
-FROM            tblWaterProfiles AS w INNER JOIN
-                         tblEvents AS e ON w.PONDNAME = e.PONDNAME
-WHERE        (e.CONTMONVISIT = 1)
-GROUP BY w.PONDNAME, CONVERT(Date, w.SAMPLEDATE), w.SAMPLEDEPTH
-ORDER BY w.PONDNAME, SAMPLEDATE, w.SAMPLEDEPTH"
-Means = dbGetQuery(connection,Sql)
-
-Lake = 'BELA-033'
-ggplot(Means %>% filter(PONDNAME==Lake)) +
-  geom_line(aes(x=Temperature_Mean,y=SAMPLEDEPTH)) +
-  theme_minimal() +
-  ggtitle(Lake)
-
-
-```
 
 
